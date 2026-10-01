@@ -17,6 +17,12 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.world.ChunkUnloadEvent;
 import org.bukkit.event.world.WorldLoadEvent;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import dev.tins.worldguardextraflagsplus.WorldGuardExtraFlagsPlusPlugin;
@@ -24,9 +30,13 @@ import dev.tins.worldguardextraflagsplus.WorldGuardExtraFlagsPlusPlugin;
 @RequiredArgsConstructor
 public class WorldListener implements Listener
 {
+	private static final long DENY_REGIONS_REFRESH_MILLIS = 1000L;
+
 	private final WorldGuardExtraFlagsPlusPlugin plugin;
 
 	private final RegionContainer regionContainer;
+
+	private final Map<UUID, DenyRegions> denyRegions = new ConcurrentHashMap<>();
 	
 	@EventHandler(priority = EventPriority.MONITOR)
 	public void onWorldLoadEvent(WorldLoadEvent event)
@@ -53,6 +63,11 @@ public class WorldListener implements Listener
 			return;
 		}
 
+		if (!this.isNearDenyRegion(world, regionManager, chunk))
+		{
+			return;
+		}
+
 		for (ProtectedRegion region : regionManager.getApplicableRegions(new ProtectedCuboidRegion("UnloadChunkFlagTester", BlockVector3.at(chunk.getX() * 16, world.getMinHeight(), chunk.getZ() * 16), BlockVector3.at(chunk.getX() * 16 + 15, world.getMaxHeight(), chunk.getZ() * 16 + 15))))
 		{
 			if (region.getFlag(Flags.CHUNK_UNLOAD) == StateFlag.State.DENY)
@@ -60,6 +75,48 @@ public class WorldListener implements Listener
 				chunk.addPluginChunkTicket(this.plugin);
 			}
 		}
+	}
+
+	private boolean isNearDenyRegion(World world, RegionManager regionManager, Chunk chunk)
+	{
+		long now = System.currentTimeMillis();
+		DenyRegions cached = this.denyRegions.get(world.getUID());
+		if (cached == null || now >= cached.refreshAt())
+		{
+			cached = new DenyRegions(now + DENY_REGIONS_REFRESH_MILLIS, this.findDenyRegions(regionManager));
+			this.denyRegions.put(world.getUID(), cached);
+		}
+
+		for (ProtectedRegion region : cached.regions())
+		{
+			BlockVector3 min = region.getMinimumPoint();
+			BlockVector3 max = region.getMaximumPoint();
+			if (chunk.getX() >= min.x() >> 4 && chunk.getX() <= max.x() >> 4
+					&& chunk.getZ() >= min.z() >> 4 && chunk.getZ() <= max.z() >> 4)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private List<ProtectedRegion> findDenyRegions(RegionManager regionManager)
+	{
+		List<ProtectedRegion> regions = new ArrayList<>();
+		for (ProtectedRegion region : regionManager.getRegions().values())
+		{
+			if (region.getFlag(Flags.CHUNK_UNLOAD) == StateFlag.State.DENY)
+			{
+				regions.add(region);
+			}
+		}
+
+		return regions;
+	}
+
+	private record DenyRegions(long refreshAt, List<ProtectedRegion> regions)
+	{
 	}
 }
 
